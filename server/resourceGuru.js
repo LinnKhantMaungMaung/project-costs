@@ -11,24 +11,47 @@ let _accessToken    = null;
 let _tokenExpiresAt = 0;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
-async function authenticate() {
-  console.log('[RG] Authenticating...');
-  const res = await fetch(TOKEN_URL, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      grant_type:    'password',
-      username:      process.env.RG_USERNAME,
-      password:      process.env.RG_PASSWORD,
-      client_id:     process.env.RG_CLIENT_ID,
-      client_secret: process.env.RG_CLIENT_SECRET,
-    }),
-  });
-  if (!res.ok) throw new Error(`RG auth failed ${res.status}: ${await res.text()}`);
-  const data = await res.json();
-  _accessToken    = data.access_token;
-  _tokenExpiresAt = Date.now() + (data.expires_in - 60) * 1000;
-  console.log('[RG] Authenticated.');
+async function authenticate(attempt = 1) {
+  console.log(`[RG] Authenticating... (attempt ${attempt})`);
+  console.log(`[RG] Credentials check — account: ${process.env.RG_ACCOUNT}, username: ${process.env.RG_USERNAME}, client_id set: ${!!process.env.RG_CLIENT_ID}, client_secret set: ${!!process.env.RG_CLIENT_SECRET}, password set: ${!!process.env.RG_PASSWORD}`);
+
+  // Use a 30s timeout — Render free tier can be slow on outbound connections
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+
+  try {
+    const res = await fetch(TOKEN_URL, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal:  controller.signal,
+      body: JSON.stringify({
+        grant_type:    'password',
+        username:      process.env.RG_USERNAME,
+        password:      process.env.RG_PASSWORD,
+        client_id:     process.env.RG_CLIENT_ID,
+        client_secret: process.env.RG_CLIENT_SECRET,
+      }),
+    });
+    clearTimeout(timer);
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`RG auth failed ${res.status}: ${body}`);
+    }
+    const data = await res.json();
+    _accessToken    = data.access_token;
+    _tokenExpiresAt = Date.now() + (data.expires_in - 60) * 1000;
+    console.log('[RG] Authenticated successfully.');
+  } catch (err) {
+    clearTimeout(timer);
+    // Retry up to 3 times with increasing delays
+    if (attempt < 4) {
+      const delay = attempt * 3000;
+      console.warn(`[RG] Auth attempt ${attempt} failed: ${err.message} — retrying in ${delay/1000}s`);
+      await sleep(delay);
+      return authenticate(attempt + 1);
+    }
+    throw new Error(`RG authentication failed after ${attempt} attempts: ${err.message}`);
+  }
 }
 
 async function ensureToken() {
