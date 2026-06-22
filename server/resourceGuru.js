@@ -78,25 +78,62 @@ async function ensureToken() {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// ── Native https GET (avoids node-fetch premature close) ─────────────────────
+function httpsGet(urlStr, token) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr);
+    const options = {
+      hostname: u.hostname,
+      path:     u.pathname + u.search,
+      method:   'GET',
+      headers:  {
+        'Authorization': `Bearer ${token}`,
+        'Accept':        'application/json',
+      },
+      timeout: 30000,
+    };
+    const req = https.request(options, res => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          resolve({ status: res.statusCode, headers: res.headers, body: JSON.parse(data) });
+        } catch(e) {
+          resolve({ status: res.statusCode, headers: res.headers, body: data });
+        }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error(`Request timed out: ${urlStr}`)); });
+    req.end();
+  });
+}
+
 // ── Rate-limited GET ──────────────────────────────────────────────────────────
-// Every call goes through here. Handles 429 with Retry-After header.
 async function rgGet(path, params = {}) {
   await ensureToken();
   const url = new URL(`${BASE}/${process.env.RG_ACCOUNT}${path}`);
-  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
 
   while (true) {
-    const res = await fetch(url.toString(), {
-      headers: { Authorization: `Bearer ${_accessToken}` },
-    });
-    if (res.status === 429) {
-      const retry = parseInt(res.headers.get('Retry-After') || '10', 10);
+    const { status, headers, body } = await httpsGet(url.toString(), _accessToken);
+    if (status === 429) {
+      const retry = parseInt(headers['retry-after'] || '10', 10);
       console.warn(`[RG] Rate limited on ${path} — waiting ${retry}s`);
-      await sleep(retry * 1000 + 500); // extra 500ms buffer
+      await sleep(retry * 1000 + 500);
       continue;
     }
-    if (!res.ok) throw new Error(`RG ${res.status} on ${path}: ${await res.text()}`);
-    return res.json();
+    if (status === 401) {
+      // Token expired — re-authenticate and retry once
+      console.warn('[RG] 401 — re-authenticating...');
+      _accessToken = null;
+      await ensureToken();
+      continue;
+    }
+    if (status < 200 || status >= 300) {
+      throw new Error(`RG ${status} on ${path}: ${JSON.stringify(body).slice(0, 200)}`);
+    }
+    return body;
   }
 }
 
