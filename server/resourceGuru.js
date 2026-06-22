@@ -3,6 +3,7 @@
 // RG limit: 200 requests/minute. We stay well under by serialising all calls.
 
 const fetch = require('node-fetch');
+const https = require('https');
 
 const BASE      = 'https://api.resourceguruapp.com/v1';
 const TOKEN_URL = 'https://api.resourceguruapp.com/oauth/token';
@@ -10,47 +11,64 @@ const TOKEN_URL = 'https://api.resourceguruapp.com/oauth/token';
 let _accessToken    = null;
 let _tokenExpiresAt = 0;
 
-// ── Auth ──────────────────────────────────────────────────────────────────────
+// ── Auth using native https (avoids node-fetch premature close on auth) ───────
+function httpsPost(url, body) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const u = new URL(url);
+    const options = {
+      hostname: u.hostname,
+      path:     u.pathname,
+      method:   'POST',
+      headers:  {
+        'Content-Type':   'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+        'Accept':         'application/json',
+      },
+      timeout: 30000,
+    };
+    const req = https.request(options, res => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          resolve({ status: res.statusCode, body: JSON.parse(data) });
+        } catch(e) {
+          resolve({ status: res.statusCode, body: data });
+        }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Auth request timed out')); });
+    req.write(payload);
+    req.end();
+  });
+}
+
 async function authenticate(attempt = 1) {
   console.log(`[RG] Authenticating... (attempt ${attempt})`);
-  console.log(`[RG] Credentials check — account: ${process.env.RG_ACCOUNT}, username: ${process.env.RG_USERNAME}, client_id set: ${!!process.env.RG_CLIENT_ID}, client_secret set: ${!!process.env.RG_CLIENT_SECRET}, password set: ${!!process.env.RG_PASSWORD}`);
-
-  // Use a 30s timeout — Render free tier can be slow on outbound connections
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30000);
-
+  console.log(`[RG] account=${process.env.RG_ACCOUNT} username=${process.env.RG_USERNAME} client_id_set=${!!process.env.RG_CLIENT_ID} secret_set=${!!process.env.RG_CLIENT_SECRET} password_set=${!!process.env.RG_PASSWORD}`);
   try {
-    const res = await fetch(TOKEN_URL, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal:  controller.signal,
-      body: JSON.stringify({
-        grant_type:    'password',
-        username:      process.env.RG_USERNAME,
-        password:      process.env.RG_PASSWORD,
-        client_id:     process.env.RG_CLIENT_ID,
-        client_secret: process.env.RG_CLIENT_SECRET,
-      }),
+    const { status, body } = await httpsPost(TOKEN_URL, {
+      grant_type:    'password',
+      username:      process.env.RG_USERNAME,
+      password:      process.env.RG_PASSWORD,
+      client_id:     process.env.RG_CLIENT_ID,
+      client_secret: process.env.RG_CLIENT_SECRET,
     });
-    clearTimeout(timer);
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`RG auth failed ${res.status}: ${body}`);
-    }
-    const data = await res.json();
-    _accessToken    = data.access_token;
-    _tokenExpiresAt = Date.now() + (data.expires_in - 60) * 1000;
+    if (status !== 200) throw new Error(`RG auth HTTP ${status}: ${JSON.stringify(body)}`);
+    if (!body.access_token) throw new Error(`No access_token in response: ${JSON.stringify(body)}`);
+    _accessToken    = body.access_token;
+    _tokenExpiresAt = Date.now() + (body.expires_in - 60) * 1000;
     console.log('[RG] Authenticated successfully.');
-  } catch (err) {
-    clearTimeout(timer);
-    // Retry up to 3 times with increasing delays
+  } catch(err) {
     if (attempt < 4) {
-      const delay = attempt * 3000;
+      const delay = attempt * 4000;
       console.warn(`[RG] Auth attempt ${attempt} failed: ${err.message} — retrying in ${delay/1000}s`);
       await sleep(delay);
       return authenticate(attempt + 1);
     }
-    throw new Error(`RG authentication failed after ${attempt} attempts: ${err.message}`);
+    throw new Error(`RG auth failed after ${attempt} attempts: ${err.message}`);
   }
 }
 
