@@ -196,23 +196,46 @@ async function fetchProjects() {
     await sleep(400);
   }
   console.log(`[RG] Fetched ${results.length} projects`);
+  // Log sample to verify project_code field name
+  if (results.length > 0) {
+    const s = results[0];
+    console.log(`[RG] Sample project: id=${s.id} project_code=${s.project_code} name=${s.name} fields=${Object.keys(s).join(',')}`);
+  }
   return results;
 }
 
 // ── Fetch all resources (for name/dept lookup by resource_id) ─────────────────
+// Uses limit/offset (same as bookings — per_page/page unreliable on this endpoint)
+// Fetches both active and archived to cover historical bookings
 async function fetchAllResources() {
-  console.log('[RG] Fetching all resources...');
+  console.log('[RG] Fetching all resources (active + archived)...');
   const results = [];
-  let page = 1;
-  while (true) {
-    const data = await rgGet('/resources', { per_page: 100, page });
-    if (!Array.isArray(data) || data.length === 0) break;
-    results.push(...data);
-    if (data.length < 100) break;
-    page++;
-    await sleep(300);
+  const seen    = new Set();
+
+  async function fetchPages(extraParams = {}) {
+    let offset = 0;
+    while (true) {
+      const data = await rgGet('/resources', { limit: 50, offset, ...extraParams });
+      if (!Array.isArray(data) || data.length === 0) break;
+      data.forEach(r => { if (!seen.has(r.id)) { seen.add(r.id); results.push(r); } });
+      if (data.length < 50) break;
+      offset += 50;
+      await sleep(300);
+    }
   }
-  console.log(`[RG] Fetched ${results.length} resources`);
+
+  // Active resources
+  await fetchPages();
+  console.log(`[RG] Active resources: ${results.length}`);
+
+  // Archived resources (people who have left)
+  try {
+    await fetchPages({ archived: true });
+    console.log(`[RG] Total resources (active + archived): ${results.length}`);
+  } catch(err) {
+    console.warn('[RG] Could not fetch archived resources:', err.message);
+  }
+
   return results;
 }
 

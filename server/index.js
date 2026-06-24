@@ -147,6 +147,19 @@ app.get('/api/debug-booking', async (req, res) => {
   } catch(err) { res.status(500).json({ error: err.message }); }
 });
 
+// Debug: see all fetched resources and their IDs
+app.get('/api/debug-resources', async (req, res) => {
+  try {
+    const { fetchAllResources } = require('./resourceGuru');
+    const resources = await fetchAllResources();
+    res.json({
+      count: resources.length,
+      sample: resources.slice(0, 3),
+      ids: resources.map(r => ({ id: r.id, name: r.name, custom_fields: r.custom_fields })),
+    });
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, '../public/index.html')));
 
 app.listen(PORT, () => {
