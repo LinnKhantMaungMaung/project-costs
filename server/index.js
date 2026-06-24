@@ -174,6 +174,25 @@ app.post('/api/rebuild', (req, res) => {
   runBuild(from, to);
 });
 
+// Debug: see exactly what one booking looks like from RG API
+app.get('/api/debug-booking', async (req, res) => {
+  try {
+    const { fetchBookingsSerial } = require('./resourceGuru');
+    const from = req.query.from || new Date(Date.now() - 7*24*3600*1000).toISOString().slice(0,10);
+    const to   = req.query.to   || new Date().toISOString().slice(0,10);
+    console.log(`[Debug] Fetching sample booking ${from} → ${to}`);
+    const bookings = [];
+    const raw = await fetchBookingsSerial(from, to, () => {});
+    // Return first 2 bookings in full so we can see all fields
+    res.json({
+      count: raw.length,
+      sample: raw.slice(0, 2),
+    });
+  } catch(err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, '../public/index.html')));
 
 app.listen(PORT, () => {
