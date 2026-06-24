@@ -134,21 +134,52 @@ async function buildProjectData(from, to, onProgress) {
   if (sampleProj) console.log(`[Bookings] Sample project: id=${sampleProj.id} project_code=${sampleProj.project_code} name=${sampleProj.name}`);
 
   // Resource ID → { name, dept, isContractor, jobTitle } lookup
+  // RG /resources returns custom fields as custom_field_values (with include param)
+  // or custom_fields — try both, then fall back to job title mapping
   const resourceLookup = {};
   const CONTRACTOR_OPT = 172385;
+
   for (const r of allResources) {
-    const resCF     = r.custom_fields || {};
-    const deptIds   = resCF['81460'] || [];
-    const dept      = deptIds.length > 0
-      ? (deptLookup[Number(deptIds[0])] || deptLookup[String(deptIds[0])] || 'Unknown')
-      : 'Unknown';
-    const contrIds  = resCF['81461'] || [];
+    // Try custom_field_values first (returned when include=custom_field_values)
+    const cfv     = r.custom_field_values || {};
+    // Try custom_fields fallback
+    const cf      = r.custom_fields       || {};
+
+    // Department: field 81460
+    // custom_field_values returns as { "81460": ["option_id_1"] } or { "Department": ["name"] }
+    let dept = 'Unknown';
+    const deptCFV = cfv['81460'] || cfv['Department'] || [];
+    const deptCF  = cf['81460']  || [];
+
+    if (deptCFV.length > 0) {
+      const val = deptCFV[0];
+      // Could be option ID (number) or direct name (string)
+      dept = deptLookup[Number(val)] || deptLookup[String(val)] || String(val);
+    } else if (deptCF.length > 0) {
+      const val = deptCF[0];
+      dept = deptLookup[Number(val)] || deptLookup[String(val)] || String(val);
+    }
+
+    // Contractor: field 81461
+    const contrCFV = cfv['81461'] || cfv['Contractor/Employee'] || [];
+    const contrCF  = cf['81461']  || [];
+    const allContrIds = [...contrCFV, ...contrCF].map(Number);
+    const isContractor = allContrIds.includes(CONTRACTOR_OPT);
+
     resourceLookup[String(r.id)] = {
-      name:         r.name || 'Unknown',
+      name:         r.name     || 'Unknown',
       dept,
-      isContractor: contrIds.map(Number).includes(CONTRACTOR_OPT),
-      jobTitle:     r.job_title || '',
+      isContractor,
+      jobTitle:     r.job_title || r.type || '',
     };
+  }
+
+  // Log sample to check if custom fields came through
+  const sampleRes = allResources[0];
+  if (sampleRes) {
+    console.log(`[Bookings] Sample resource: id=${sampleRes.id} name=${sampleRes.name}`);
+    console.log(`[Bookings] custom_field_values=${JSON.stringify(sampleRes.custom_field_values)}`);
+    console.log(`[Bookings] custom_fields=${JSON.stringify(sampleRes.custom_fields)}`);
   }
   console.log(`[Bookings] Resource lookup: ${Object.keys(resourceLookup).length} resources`);
 
@@ -164,6 +195,7 @@ async function buildProjectData(from, to, onProgress) {
 
   // projectMap: projectCode → projectData
   const projectMap = {};
+  const unknownResources = new Set();
 
   for (let i = 0; i < bookings.length; i++) {
     const b = bookings[i];
@@ -181,6 +213,17 @@ async function buildProjectData(from, to, onProgress) {
     // ── Resource — look up by resource_id ────────────────────────────────────
     const resId   = b.resource_id ? String(b.resource_id) : null;
     const resInfo = resId ? resourceLookup[resId] : null;
+
+    // If resource not found in lookup, skip rather than show Unknown
+    // (resource may be deleted or from a resource type we don't track)
+    if (!resInfo && resId) {
+      // Log once per unknown resource_id to help debugging
+      if (!unknownResources.has(resId)) {
+        unknownResources.add(resId);
+        console.warn(`[Bookings] Unknown resource_id: ${resId} — booking id: ${b.id}`);
+      }
+      continue; // skip this booking rather than pollute data with Unknown
+    }
 
     const resourceName = resInfo?.name         || 'Unknown';
     const dept         = resInfo?.dept         || 'Unknown';

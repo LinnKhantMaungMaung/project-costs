@@ -215,7 +215,8 @@ async function fetchAllResources() {
   async function fetchPages(extraParams = {}) {
     let offset = 0;
     while (true) {
-      const data = await rgGet('/resources', { limit: 50, offset, ...extraParams });
+      // include=custom_field_values asks RG to return custom fields with each resource
+      const data = await rgGet('/resources', { limit: 50, offset, include: 'custom_field_values', ...extraParams });
       if (!Array.isArray(data) || data.length === 0) break;
       data.forEach(r => { if (!seen.has(r.id)) { seen.add(r.id); results.push(r); } });
       if (data.length < 50) break;
