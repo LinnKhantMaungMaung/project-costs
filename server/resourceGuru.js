@@ -261,4 +261,29 @@ async function fetchResourcesWithCustomFields(resourceList) {
   return results;
 }
 
-module.exports = { fetchResourceTypes, fetchBookingsSerial, fetchProjects, fetchAllResources, fetchResourcesWithCustomFields, sleep, BASE };
+// Fetch one week of /reports/resources — this endpoint returns custom_fields
+// with dept option IDs (field 81460) and contractor flag (field 81461) per resource
+// This is the same approach used by the existing dashboard
+async function fetchReportForDeptLookup() {
+  try {
+    const today = new Date();
+    // Use last Monday to get a week likely to have bookings
+    const day = today.getDay() || 7;
+    const mon = new Date(today);
+    mon.setDate(today.getDate() - (day - 1) - 7); // last week's Monday
+    const sun = new Date(mon);
+    sun.setDate(mon.getDate() + 6);
+    const from = mon.toISOString().slice(0, 10);
+    const to   = sun.toISOString().slice(0, 10);
+    console.log(`[RG] Fetching report sample for dept lookup: ${from} → ${to}`);
+    const report = await rgGet('/reports/resources', { start_date: from, end_date: to });
+    const resources = Array.isArray(report) ? report : (report.resources || report.data || []);
+    console.log(`[RG] Report sample: ${resources.length} resources, sample custom_fields: ${JSON.stringify(resources[0]?.custom_fields)}`);
+    return resources;
+  } catch(err) {
+    console.warn('[RG] Could not fetch report sample for dept lookup:', err.message);
+    return [];
+  }
+}
+
+module.exports = { fetchResourceTypes, fetchBookingsSerial, fetchProjects, fetchAllResources, fetchReportForDeptLookup, sleep, BASE };

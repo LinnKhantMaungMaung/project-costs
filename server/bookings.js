@@ -19,7 +19,7 @@
 //   Service                             → Dept = "Service"
 // ─────────────────────────────────────────────────────────────────────────────
 
-const { fetchResourceTypes, fetchBookingsSerial, fetchProjects, fetchAllResources, fetchResourcesWithCustomFields } = require('./resourceGuru');
+const { fetchResourceTypes, fetchBookingsSerial, fetchProjects, fetchAllResources, fetchReportForDeptLookup } = require('./resourceGuru');
 
 // ── Cost centre definitions ───────────────────────────────────────────────────
 const COST_CENTRES = [
@@ -84,7 +84,6 @@ const COST_CENTRES = [
 async function buildDeptLookup() {
   const CONTRACTOR_OPT_ID = 172385;
   const deptLookup = {};
-  const contrLookup = {};
 
   try {
     const resourceTypes = await fetchResourceTypes();
@@ -97,12 +96,15 @@ async function buildDeptLookup() {
         deptLookup[Number(opt.id)] = opt.value;
         deptLookup[String(opt.id)] = opt.value;
       });
+      console.log(`[Bookings] Dept options loaded: ${Object.values(deptLookup).filter((v,i,a)=>a.indexOf(v)===i).join(', ')}`);
+    } else {
+      console.warn('[Bookings] No dept options found in resource_types');
     }
   } catch (err) {
     console.warn('[Bookings] Could not load dept options:', err.message);
   }
 
-  return { deptLookup, CONTRACTOR_OPT_ID: 172385 };
+  return { deptLookup, CONTRACTOR_OPT_ID };
 }
 
 // ── Main build ────────────────────────────────────────────────────────────────
@@ -112,14 +114,25 @@ async function buildProjectData(from, to, onProgress) {
   if (onProgress) onProgress({ stage: 'fetch', done: 0, total: 4 });
 
   // Build all lookup maps in parallel
-  const [{ deptLookup, CONTRACTOR_OPT_ID }, allProjects, resourceList] = await Promise.all([
+  const [{ deptLookup, CONTRACTOR_OPT_ID }, allProjects, allResources, reportSample] = await Promise.all([
     buildDeptLookup(),
     fetchProjects(),
     fetchAllResources(),
+    fetchReportForDeptLookup(), // one week of /reports/resources — has custom_fields with dept IDs
   ]);
 
-  // Fetch each resource individually to get custom_field_values (dept/contractor info)
-  const allResources = await fetchResourcesWithCustomFields(resourceList);
+  // Build resource ID → dept mapping from the reports endpoint
+  // (the /resources list endpoint doesn't return custom_fields, but /reports/resources does)
+  const resourceDeptById = {};
+  const resourceContrById = {};
+  for (const r of reportSample) {
+    if (!r.id) continue;
+    const deptIds  = r.custom_fields?.['81460'] || [];
+    const contrIds = r.custom_fields?.['81461'] || [];
+    if (deptIds.length > 0)  resourceDeptById[String(r.id)]  = deptIds;
+    if (contrIds.length > 0) resourceContrById[String(r.id)] = contrIds;
+  }
+  console.log(`[Bookings] Dept mapping from report: ${Object.keys(resourceDeptById).length} resources with dept`);
 
   // Project ID → { code, name } lookup
   // RG projects have a 'project_code' field which is the human-readable number (e.g. 5884)
@@ -143,31 +156,25 @@ async function buildProjectData(from, to, onProgress) {
   const CONTRACTOR_OPT = 172385;
 
   for (const r of allResources) {
-    // Try custom_field_values first (returned when include=custom_field_values)
-    const cfv     = r.custom_field_values || {};
-    // Try custom_fields fallback
-    const cf      = r.custom_fields       || {};
+    const resIdStr = String(r.id);
 
-    // Department: field 81460
-    // custom_field_values returns as { "81460": ["option_id_1"] } or { "Department": ["name"] }
+    // Department: use report-based mapping first (has custom_fields),
+    // fall back to direct custom_fields on resource object
     let dept = 'Unknown';
-    const deptCFV = cfv['81460'] || cfv['Department'] || [];
-    const deptCF  = cf['81460']  || [];
+    const deptIdsFromReport = resourceDeptById[resIdStr] || [];
+    const deptIdsFromRes    = (r.custom_fields?.['81460']) || (r.custom_field_values?.['81460']) || [];
+    const deptIds = deptIdsFromReport.length > 0 ? deptIdsFromReport : deptIdsFromRes;
 
-    if (deptCFV.length > 0) {
-      const val = deptCFV[0];
-      // Could be option ID (number) or direct name (string)
-      dept = deptLookup[Number(val)] || deptLookup[String(val)] || String(val);
-    } else if (deptCF.length > 0) {
-      const val = deptCF[0];
-      dept = deptLookup[Number(val)] || deptLookup[String(val)] || String(val);
+    if (deptIds.length > 0) {
+      const val = deptIds[0];
+      dept = deptLookup[Number(val)] || deptLookup[String(val)] || 'Unknown';
     }
 
-    // Contractor: field 81461
-    const contrCFV = cfv['81461'] || cfv['Contractor/Employee'] || [];
-    const contrCF  = cf['81461']  || [];
-    const allContrIds = [...contrCFV, ...contrCF].map(Number);
-    const isContractor = allContrIds.includes(CONTRACTOR_OPT);
+    // Contractor: same approach
+    const contrIdsFromReport = resourceContrById[resIdStr] || [];
+    const contrIdsFromRes    = (r.custom_fields?.['81461']) || (r.custom_field_values?.['81461']) || [];
+    const contrIds = contrIdsFromReport.length > 0 ? contrIdsFromReport : contrIdsFromRes;
+    const isContractor = contrIds.map(Number).includes(CONTRACTOR_OPT_ID);
 
     resourceLookup[String(r.id)] = {
       name:         r.name     || 'Unknown',
@@ -177,15 +184,13 @@ async function buildProjectData(from, to, onProgress) {
     };
   }
 
-  // Log sample to verify custom fields are present
-  const sampleRes = allResources[0];
-  if (sampleRes) {
-    console.log(`[Bookings] Sample resource: id=${sampleRes.id} name=${sampleRes.name}`);
-    console.log(`[Bookings] custom_field_values keys: ${Object.keys(sampleRes.custom_field_values||{}).join(',') || 'NONE'}`);
-    console.log(`[Bookings] custom_fields keys: ${Object.keys(sampleRes.custom_fields||{}).join(',') || 'NONE'}`);
-    console.log(`[Bookings] Full sample: ${JSON.stringify(sampleRes).slice(0,500)}`);
-  }
-  console.log(`[Bookings] Resource lookup: ${Object.keys(resourceLookup).length} resources`);
+  // Log a few samples to verify dept resolution
+  const sampleIds = Object.keys(resourceLookup).slice(0, 3);
+  sampleIds.forEach(id => {
+    const r = resourceLookup[id];
+    console.log(`[Bookings] Resource ${id}: ${r.name} → dept=${r.dept} contractor=${r.isContractor}`);
+  });
+  console.log(`[Bookings] Resource lookup: ${Object.keys(resourceLookup).length} resources, ${Object.values(resourceLookup).filter(r=>r.dept!=='Unknown').length} with dept`);
 
   if (onProgress) onProgress({ stage: 'fetch', done: 1, total: 4 });
 
