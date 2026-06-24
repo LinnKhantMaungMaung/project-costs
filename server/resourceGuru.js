@@ -2,8 +2,7 @@
 // Resource Guru API client — conservative rate limiting for large fetches
 // RG limit: 200 requests/minute. We stay well under by serialising all calls.
 
-const fetch = require('node-fetch');
-const https = require('https');
+const https = require('https'); // built-in — no node-fetch needed
 
 const BASE      = 'https://api.resourceguruapp.com/v1';
 const TOKEN_URL = 'https://api.resourceguruapp.com/oauth/token';
