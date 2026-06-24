@@ -215,8 +215,7 @@ async function fetchAllResources() {
   async function fetchPages(extraParams = {}) {
     let offset = 0;
     while (true) {
-      // include=custom_field_values asks RG to return custom fields with each resource
-      const data = await rgGet('/resources', { limit: 50, offset, include: 'custom_field_values', ...extraParams });
+      const data = await rgGet('/resources', { limit: 50, offset, ...extraParams });
       if (!Array.isArray(data) || data.length === 0) break;
       data.forEach(r => { if (!seen.has(r.id)) { seen.add(r.id); results.push(r); } });
       if (data.length < 50) break;
@@ -240,4 +239,26 @@ async function fetchAllResources() {
   return results;
 }
 
-module.exports = { fetchResourceTypes, fetchBookingsSerial, fetchProjects, fetchAllResources, sleep, BASE };
+// Fetch a single resource by ID — returns full object including custom_field_values
+async function fetchResource(id) {
+  return rgGet(`/resources/${id}`);
+}
+
+// Fetch resources WITH custom field values by getting each individually
+// Used as fallback when list endpoint doesn't return custom fields
+// Batches of 5 with 400ms gap to stay under rate limit
+async function fetchResourcesWithCustomFields(resourceList) {
+  console.log(`[RG] Fetching ${resourceList.length} resources individually for custom fields...`);
+  const results = [];
+  const BATCH = 5;
+  for (let i = 0; i < resourceList.length; i += BATCH) {
+    const batch = resourceList.slice(i, i + BATCH);
+    const fetched = await Promise.all(batch.map(r => fetchResource(r.id).catch(() => r)));
+    results.push(...fetched);
+    if (i + BATCH < resourceList.length) await sleep(400);
+  }
+  console.log(`[RG] Fetched ${results.length} full resource objects`);
+  return results;
+}
+
+module.exports = { fetchResourceTypes, fetchBookingsSerial, fetchProjects, fetchAllResources, fetchResourcesWithCustomFields, sleep, BASE };

@@ -19,7 +19,7 @@
 //   Service                             → Dept = "Service"
 // ─────────────────────────────────────────────────────────────────────────────
 
-const { fetchResourceTypes, fetchBookingsSerial, fetchProjects, fetchAllResources } = require('./resourceGuru');
+const { fetchResourceTypes, fetchBookingsSerial, fetchProjects, fetchAllResources, fetchResourcesWithCustomFields } = require('./resourceGuru');
 
 // ── Cost centre definitions ───────────────────────────────────────────────────
 const COST_CENTRES = [
@@ -112,11 +112,14 @@ async function buildProjectData(from, to, onProgress) {
   if (onProgress) onProgress({ stage: 'fetch', done: 0, total: 4 });
 
   // Build all lookup maps in parallel
-  const [{ deptLookup, CONTRACTOR_OPT_ID }, allProjects, allResources] = await Promise.all([
+  const [{ deptLookup, CONTRACTOR_OPT_ID }, allProjects, resourceList] = await Promise.all([
     buildDeptLookup(),
     fetchProjects(),
     fetchAllResources(),
   ]);
+
+  // Fetch each resource individually to get custom_field_values (dept/contractor info)
+  const allResources = await fetchResourcesWithCustomFields(resourceList);
 
   // Project ID → { code, name } lookup
   // RG projects have a 'project_code' field which is the human-readable number (e.g. 5884)
@@ -174,12 +177,13 @@ async function buildProjectData(from, to, onProgress) {
     };
   }
 
-  // Log sample to check if custom fields came through
+  // Log sample to verify custom fields are present
   const sampleRes = allResources[0];
   if (sampleRes) {
     console.log(`[Bookings] Sample resource: id=${sampleRes.id} name=${sampleRes.name}`);
-    console.log(`[Bookings] custom_field_values=${JSON.stringify(sampleRes.custom_field_values)}`);
-    console.log(`[Bookings] custom_fields=${JSON.stringify(sampleRes.custom_fields)}`);
+    console.log(`[Bookings] custom_field_values keys: ${Object.keys(sampleRes.custom_field_values||{}).join(',') || 'NONE'}`);
+    console.log(`[Bookings] custom_fields keys: ${Object.keys(sampleRes.custom_fields||{}).join(',') || 'NONE'}`);
+    console.log(`[Bookings] Full sample: ${JSON.stringify(sampleRes).slice(0,500)}`);
   }
   console.log(`[Bookings] Resource lookup: ${Object.keys(resourceLookup).length} resources`);
 
