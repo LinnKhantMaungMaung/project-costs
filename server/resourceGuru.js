@@ -141,44 +141,41 @@ async function fetchResourceTypes() {
   return rgGet('/resource_types');
 }
 
-// ── Bookings: fetch one month at a time, fully serial, conservative pacing ───
-// For 3 years of data we fetch month by month with a 400ms gap between each.
-// 36 months × ~2 pages each = ~72 API calls = well under 200/min limit.
-// Each monthly chunk is fully serial (no parallel) to guarantee rate safety.
+// ── Bookings: fetch using limit/offset pagination (matches working standalone page)
+// Uses limit=50 with 400ms delay — confirmed working with RG API
+// start_date/end_date filters passed to narrow the range
 async function fetchBookingsSerial(from, to, onProgress) {
-  // Build list of monthly chunks
-  const chunks = [];
-  let cur = new Date(from);
-  const end = new Date(to);
-  while (cur <= end) {
-    const chunkFrom = cur.toISOString().slice(0, 10);
-    const monthEnd  = new Date(cur.getFullYear(), cur.getMonth() + 1, 0);
-    const chunkTo   = monthEnd < end ? monthEnd.toISOString().slice(0, 10) : to;
-    chunks.push({ from: chunkFrom, to: chunkTo });
-    cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
-  }
+  console.log(`[RG] Fetching bookings ${from} → ${to} using limit/offset...`);
+  const BATCH = 50;
+  const all   = [];
+  let offset  = 0;
+  let done    = false;
+  let pageNum = 0;
 
-  console.log(`[RG] Fetching ${chunks.length} monthly chunks serially...`);
-  const all = [];
+  while (!done) {
+    const params = {
+      limit:      BATCH,
+      offset,
+      start_date: from,
+      end_date:   to,
+    };
 
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    let page = 1;
-    while (true) {
-      const data = await rgGet('/bookings', {
-        start_date: chunk.from,
-        end_date:   chunk.to,
-        per_page:   300,
-        page,
-      });
-      if (!Array.isArray(data) || data.length === 0) break;
-      all.push(...data);
-      if (data.length < 300) break;
-      page++;
-      await sleep(400); // 400ms between pages within a month
+    const data = await rgGet('/bookings', params);
+
+    if (!Array.isArray(data) || data.length === 0) break;
+
+    all.push(...data);
+    pageNum++;
+    console.log(`[RG] Fetched ${all.length} bookings (offset ${offset})...`);
+
+    if (data.length < BATCH) {
+      done = true;
+    } else {
+      offset += BATCH;
+      await sleep(400); // 400ms between requests — well under rate limit
     }
-    await sleep(400); // 400ms between months
-    if (onProgress) onProgress(i + 1, chunks.length);
+
+    if (onProgress) onProgress(all.length, done);
   }
 
   console.log(`[RG] Fetched ${all.length} bookings total`);

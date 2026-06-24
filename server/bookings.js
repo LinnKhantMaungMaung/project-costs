@@ -132,18 +132,18 @@ async function buildProjectData(from, to, onProgress) {
       || null;
     if (!projCode) continue;
 
-    const projName = b.project?.name || b.project_name || String(projCode);
+    const projName    = b.project?.name || b.project_name || String(projCode);
     const projCodeStr = String(projCode);
 
     // ── Resource ─────────────────────────────────────────────────────────────
-    const res  = b.resource || {};
+    const res   = b.resource || {};
     const resCF = res.custom_fields || {};
 
-    // Department
+    // Department from custom_fields or job title fallback
     const deptIds = resCF['81460'] || [];
     const dept    = deptIds.length > 0
       ? (deptLookup[Number(deptIds[0])] || deptLookup[String(deptIds[0])] || 'Unknown')
-      : (res.job_title ? 'Unknown' : 'Unknown');
+      : 'Unknown';
 
     // Contractor/Employee
     const contractorIds = resCF['81461'] || [];
@@ -153,19 +153,32 @@ async function buildProjectData(from, to, onProgress) {
     const bookCF   = b.custom_fields || {};
     const category = bookCF['81458'] || b.activity_type?.name || 'None';
 
-    // ── Days ─────────────────────────────────────────────────────────────────
-    // RG /bookings returns duration in MINUTES
-    const minutes = Number(b.duration || b.minutes || 0);
-    const days    = minutes > 0 ? minutes / 480 : 0; // 480 min = 8hr day
-    // Note: RG uses 7.5hr days in some exports, 8hr in others.
-    // We use the raw Days logic: duration_minutes / 480
-    // This matches the Excel Days column which is pre-computed by RG.
+    // ── Days: sum across durations array ─────────────────────────────────────
+    // RG /bookings returns a durations array: [{date, duration (minutes)}]
+    // Each entry is one calendar day. We sum them all for total days on this booking.
+    const durations = b.durations || [];
+    let totalMinutes = 0;
+    let startDate = '';
+    let endDate   = '';
 
+    if (durations.length > 0) {
+      // Use durations array (most accurate)
+      for (const dur of durations) {
+        totalMinutes += Number(dur.duration || 0);
+        const d = (dur.date || '').slice(0, 10);
+        if (!startDate || d < startDate) startDate = d;
+        if (!endDate   || d > endDate)   endDate   = d;
+      }
+    } else {
+      // Fallback: single duration field
+      totalMinutes = Number(b.duration || b.minutes || 0);
+      startDate    = (b.start_date || '').slice(0, 10);
+      endDate      = (b.end_date   || startDate).slice(0, 10);
+    }
+
+    // Convert minutes to days (8hr = 480min per day, matching RG export)
+    const days = totalMinutes > 0 ? totalMinutes / 480 : 0;
     if (days <= 0) continue;
-
-    // ── Date ─────────────────────────────────────────────────────────────────
-    const startDate = (b.start_date || '').slice(0, 10);
-    const endDate   = (b.end_date   || startDate).slice(0, 10);
 
     // ── Accumulate ───────────────────────────────────────────────────────────
     if (!projectMap[projCodeStr]) {
