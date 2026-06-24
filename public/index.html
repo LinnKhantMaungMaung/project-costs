@@ -115,6 +115,7 @@
       <span style="color:var(--muted);font-size:13px">to</span>
       <input type="date" id="range-to" class="range-input">
       <button class="btn btn-primary" onclick="triggerRebuild()">Fetch &amp; Rebuild</button>
+      <button class="btn" style="background:var(--surface2);border:1px solid var(--border);color:var(--muted)" onclick="resetToDefault()">&#8635; Reset to Default</button>
       <span style="font-size:11px;color:var(--muted);font-family:'DM Mono',monospace;margin-left:4px" id="range-meta"></span>
     </div>
 
@@ -416,6 +417,25 @@ function sortCC(col) {
 function sortPeople(col) {
   if (pplSortCol===col) pplSortDir*=-1; else { pplSortCol=col; pplSortDir = col==='days'?-1:1; }
   if (CURRENT_PROJECT) renderPeople(CURRENT_PROJECT);
+}
+
+async function resetToDefault() {
+  if (!confirm('Reset to default range (last 3 years to today)?\nThis will take several minutes.')) return;
+  try {
+    const res  = await fetch('/api/reset');
+    const data = await res.json();
+    if (data.ok) {
+      clearProject();
+      document.getElementById('range-from').value = '';
+      document.getElementById('range-to').value   = '';
+      document.getElementById('build-state').style.display = 'block';
+      document.getElementById('main-ui').style.display     = 'none';
+      clearTimeout(pollTimer);
+      pollTimer = setTimeout(pollStatus, 3000);
+    } else {
+      alert('Reset error: ' + (data.error || 'unknown'));
+    }
+  } catch(e) { alert('Reset failed: ' + e.message); }
 }
 
 async function triggerRebuild() {

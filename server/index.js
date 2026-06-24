@@ -88,12 +88,15 @@ async function startup() {
     runBuild(from, to); // non-blocking
   } else {
     const ageHours = (Date.now() - new Date(meta.built_at)) / 3600000;
+    console.log(`[Server] Postgres data is ${Math.round(ageHours)}h old (${meta.range_from} → ${meta.range_to}) — ${meta.total_projects} projects`);
+    // Only auto-rebuild if data is older than 25 hours AND it was a default range build
+    // Don't rebuild custom range data automatically
     if (ageHours > 25) {
-      console.log(`[Server] Data is ${Math.round(ageHours)}h old — rebuilding...`);
+      console.log('[Server] Data stale — rebuilding with default range...');
       const { from, to } = getDefaultRange();
-      runBuild(from, to); // non-blocking
+      runBuild(from, to);
     } else {
-      console.log(`[Server] Postgres data is ${Math.round(ageHours)}h old — ready immediately`);
+      console.log('[Server] Data fresh — serving from Postgres immediately');
       progress = { stage: 'done', total: meta.total_projects };
     }
   }
@@ -163,6 +166,15 @@ app.get('/api/rebuild', (req, res) => {
   const from = req.query.from || getDefaultRange().from;
   const to   = req.query.to   || getDefaultRange().to;
   res.json({ ok: true, message: `Build started for ${from} → ${to}` });
+  runBuild(from, to);
+});
+
+// Reset to default full range (last 3 years to today)
+app.get('/api/reset', (req, res) => {
+  if (building) return res.status(409).json({ error: 'Build already in progress' });
+  const { from, to } = getDefaultRange();
+  console.log(`[Server] Reset to default range: ${from} → ${to}`);
+  res.json({ ok: true, message: `Rebuilding with default range ${from} → ${to}` });
   runBuild(from, to);
 });
 

@@ -19,7 +19,7 @@
 //   Service                             → Dept = "Service"
 // ─────────────────────────────────────────────────────────────────────────────
 
-const { fetchResourceTypes, fetchBookingsSerial } = require('./resourceGuru');
+const { fetchResourceTypes, fetchBookingsSerial, fetchProjects, fetchAllResources } = require('./resourceGuru');
 
 // ── Cost centre definitions ───────────────────────────────────────────────────
 const COST_CENTRES = [
@@ -109,11 +109,54 @@ async function buildDeptLookup() {
 async function buildProjectData(from, to, onProgress) {
   console.log(`[Bookings] Building project data ${from} → ${to}`);
 
-  const { deptLookup, CONTRACTOR_OPT_ID } = await buildDeptLookup();
+  if (onProgress) onProgress({ stage: 'fetch', done: 0, total: 4 });
 
-  const bookings = await fetchBookingsSerial(from, to, (done, total) => {
-    if (onProgress) onProgress({ stage: 'fetch', done, total });
-    console.log(`[Bookings] Fetched ${done}/${total} months`);
+  // Build all lookup maps in parallel
+  const [{ deptLookup, CONTRACTOR_OPT_ID }, allProjects, allResources] = await Promise.all([
+    buildDeptLookup(),
+    fetchProjects(),
+    fetchAllResources(),
+  ]);
+
+  // Project ID → { code, name } lookup
+  // RG projects have a 'project_code' field which is the human-readable number (e.g. 5884)
+  const projectLookup = {};
+  for (const p of allProjects) {
+    projectLookup[String(p.id)] = {
+      code: String(p.project_code || p.id),
+      name: p.name || String(p.id),
+    };
+  }
+  console.log(`[Bookings] Project lookup: ${Object.keys(projectLookup).length} projects`);
+  // Log a sample to verify project_code field
+  const sampleProj = allProjects[0];
+  if (sampleProj) console.log(`[Bookings] Sample project fields: ${JSON.stringify(Object.keys(sampleProj))}`);
+  if (sampleProj) console.log(`[Bookings] Sample project: id=${sampleProj.id} project_code=${sampleProj.project_code} name=${sampleProj.name}`);
+
+  // Resource ID → { name, dept, isContractor, jobTitle } lookup
+  const resourceLookup = {};
+  const CONTRACTOR_OPT = 172385;
+  for (const r of allResources) {
+    const resCF     = r.custom_fields || {};
+    const deptIds   = resCF['81460'] || [];
+    const dept      = deptIds.length > 0
+      ? (deptLookup[Number(deptIds[0])] || deptLookup[String(deptIds[0])] || 'Unknown')
+      : 'Unknown';
+    const contrIds  = resCF['81461'] || [];
+    resourceLookup[String(r.id)] = {
+      name:         r.name || 'Unknown',
+      dept,
+      isContractor: contrIds.map(Number).includes(CONTRACTOR_OPT),
+      jobTitle:     r.job_title || '',
+    };
+  }
+  console.log(`[Bookings] Resource lookup: ${Object.keys(resourceLookup).length} resources`);
+
+  if (onProgress) onProgress({ stage: 'fetch', done: 1, total: 4 });
+
+  const bookings = await fetchBookingsSerial(from, to, (count, done) => {
+    if (onProgress) onProgress({ stage: 'fetch', done: 2, total: 4, bookings: count });
+    console.log(`[Bookings] Fetched ${count} bookings so far...`);
   });
 
   if (onProgress) onProgress({ stage: 'build', done: 0, total: bookings.length });
@@ -125,33 +168,28 @@ async function buildProjectData(from, to, onProgress) {
   for (let i = 0; i < bookings.length; i++) {
     const b = bookings[i];
 
-    // ── Project ──────────────────────────────────────────────────────────────
-    const projCode = b.project?.id
-      || b.project?.project_code
-      || b.project_id
-      || null;
-    if (!projCode) continue;
+    // ── Project — use project_id to look up real project code ───────────────
+    const projId  = b.project_id ? String(b.project_id) : null;
+    const projInfo = projId ? projectLookup[projId] : null;
 
-    const projName    = b.project?.name || b.project_name || String(projCode);
-    const projCodeStr = String(projCode);
+    // Skip bookings with no project assigned
+    if (!projId || !projInfo) continue;
 
-    // ── Resource ─────────────────────────────────────────────────────────────
-    const res   = b.resource || {};
-    const resCF = res.custom_fields || {};
+    const projCodeStr = projInfo.code;   // human-readable e.g. "5884"
+    const projName    = projInfo.name;
 
-    // Department from custom_fields or job title fallback
-    const deptIds = resCF['81460'] || [];
-    const dept    = deptIds.length > 0
-      ? (deptLookup[Number(deptIds[0])] || deptLookup[String(deptIds[0])] || 'Unknown')
-      : 'Unknown';
+    // ── Resource — look up by resource_id ────────────────────────────────────
+    const resId   = b.resource_id ? String(b.resource_id) : null;
+    const resInfo = resId ? resourceLookup[resId] : null;
 
-    // Contractor/Employee
-    const contractorIds = resCF['81461'] || [];
-    const isContractor  = contractorIds.map(Number).includes(CONTRACTOR_OPT_ID);
+    const resourceName = resInfo?.name         || 'Unknown';
+    const dept         = resInfo?.dept         || 'Unknown';
+    const isContractor = resInfo?.isContractor || false;
 
-    // ── Category ─────────────────────────────────────────────────────────────
-    const bookCF   = b.custom_fields || {};
-    const category = bookCF['81458'] || b.activity_type?.name || 'None';
+    // ── Category from custom_field_values ────────────────────────────────────
+    const cfv      = b.custom_field_values || {};
+    const catArr   = cfv['Category'] || cfv['category'] || [];
+    const category = Array.isArray(catArr) ? (catArr[0] || 'None') : String(catArr || 'None');
 
     // ── Days: sum across durations array ─────────────────────────────────────
     // RG /bookings returns a durations array: [{date, duration (minutes)}]
@@ -226,17 +264,16 @@ async function buildProjectData(from, to, onProgress) {
     }
 
     // People breakdown
-    const personName = res.name || 'Unknown';
-    if (!proj.people[personName]) {
-      proj.people[personName] = {
-        name: personName, days: 0, dept,
+    if (!proj.people[resourceName]) {
+      proj.people[resourceName] = {
+        name: resourceName, days: 0, dept,
         empType: isContractor ? 'Contractor' : 'Employee',
         firstBooking: startDate, lastBooking: endDate,
       };
     }
-    proj.people[personName].days += days;
-    if (startDate < proj.people[personName].firstBooking) proj.people[personName].firstBooking = startDate;
-    if (endDate   > proj.people[personName].lastBooking)  proj.people[personName].lastBooking  = endDate;
+    proj.people[resourceName].days += days;
+    if (startDate && startDate < proj.people[resourceName].firstBooking) proj.people[resourceName].firstBooking = startDate;
+    if (endDate   && endDate   > proj.people[resourceName].lastBooking)  proj.people[resourceName].lastBooking  = endDate;
 
     if (i % 5000 === 0 && onProgress) {
       onProgress({ stage: 'build', done: i, total: bookings.length });

@@ -182,4 +182,38 @@ async function fetchBookingsSerial(from, to, onProgress) {
   return all;
 }
 
-module.exports = { fetchResourceTypes, fetchBookingsSerial, sleep, BASE };
+// ── Fetch all projects (for project_code lookup) ─────────────────────────────
+async function fetchProjects() {
+  console.log('[RG] Fetching all projects...');
+  const results = [];
+  let offset = 0;
+  while (true) {
+    const data = await rgGet('/projects', { limit: 50, offset });
+    if (!Array.isArray(data) || data.length === 0) break;
+    results.push(...data);
+    if (data.length < 50) break;
+    offset += 50;
+    await sleep(400);
+  }
+  console.log(`[RG] Fetched ${results.length} projects`);
+  return results;
+}
+
+// ── Fetch all resources (for name/dept lookup by resource_id) ─────────────────
+async function fetchAllResources() {
+  console.log('[RG] Fetching all resources...');
+  const results = [];
+  let page = 1;
+  while (true) {
+    const data = await rgGet('/resources', { per_page: 100, page });
+    if (!Array.isArray(data) || data.length === 0) break;
+    results.push(...data);
+    if (data.length < 100) break;
+    page++;
+    await sleep(300);
+  }
+  console.log(`[RG] Fetched ${results.length} resources`);
+  return results;
+}
+
+module.exports = { fetchResourceTypes, fetchBookingsSerial, fetchProjects, fetchAllResources, sleep, BASE };
